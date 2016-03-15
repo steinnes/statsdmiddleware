@@ -82,15 +82,17 @@ class TimingStats(object):
 
 
 class StatsdMiddleware(object):
-    def __init__(self, app, statsd):
+    def __init__(self, app, statsd, prefix=None):
         self.app = app
         self.wsgi_app = app.wsgi_app
         self.statsd = statsd
+        self.map = app.url_map.bind('')
+        self.prefix = prefix
 
-    def _metric_name_from_path(self, path):
-        uuid_regex = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+    def _metric_name(self, path, method):
         path = path.split('?')[0]
-        return re.sub(uuid_regex, 'id', path).rstrip('/').lstrip('/').replace('/', '.')
+        match = self.map.match(path, method)
+        return '{}{}'.format(self.prefix and '{}.'.format(self.prefix) or '', match[0])
 
     def __call__(self, environ, start_response):
         def start_response_wrapper(*args, **kwargs):
@@ -98,16 +100,18 @@ class StatsdMiddleware(object):
             self.status = status
             return start_response(*args, **kwargs)
 
-        metric_name = '{}.{}'.format(
-            self.app.name,
-            self._metric_name_from_path(environ['PATH_INFO'])
-        )
-        with TimingStats(self.statsd, metric_name) as metric:
-            response = self.wsgi_app(environ, start_response_wrapper)
-            metric.tags.append('http_status_code:{}'.format(self.status))
-            metric.tags.append('http_method:{}'.format(environ['REQUEST_METHOD']))
+        try:
+            metric_name = self._metric_name(environ['PATH_INFO'], environ['REQUEST_METHOD'])
+            with TimingStats(self.statsd, metric_name) as metric:
+                response = self.wsgi_app(environ, start_response_wrapper)
+                metric.tags.append('http_status_code:{}'.format(self.status))
+                metric.tags.append('http_method:{}'.format(environ['REQUEST_METHOD']))
 
-        self.statsd.timing('{}.api.request'.format(self.app.name), metric.time, tags=metric.tags)
-        self.statsd.timing('{}.api.request.cpu'.format(self.app.name), metric.cpu_time, tags=metric.tags)
+            self.statsd.timing('{}.api.request'.format(self.app.name), metric.time, tags=metric.tags)
+            self.statsd.timing('{}.api.request.cpu'.format(self.app.name), metric.cpu_time, tags=metric.tags)
+        except Exception:
+            # this should only happen if the URL is not supported by our app,
+            # in which case we'll just let the app handle the 404 normally
+            return self.wsgi_app(environ, start_response_wrapper)
 
         return response

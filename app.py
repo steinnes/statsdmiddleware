@@ -14,7 +14,7 @@ app.config['statsd'].connect(
     os.environ.get('DD_HOST', 'localhost'),
     os.environ.get('DD_PORT', 8125)
 )
-app.wsgi_app = StatsdMiddleware(app, app.config['statsd'])
+app.wsgi_app = StatsdMiddleware(app, app.config['statsd'], prefix='myapp')
 
 
 @app.route('/test')
